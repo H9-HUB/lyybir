@@ -780,28 +780,94 @@ const WelcomeSequence = ({ onComplete }: { onComplete: () => void }) => {
     const h = window.innerHeight;
     canvas.width = w;
     canvas.height = h;
-    
-    let fontSize = w * 0.15;
-    ctx.font = `bold ${fontSize}px "Inter", "Microsoft YaHei", sans-serif`;
-    
-    let metrics = ctx.measureText(text);
-    while (metrics.width > w * 0.8 && fontSize > 20) {
-      fontSize -= 5;
+
+    const isNarrow = w < 768;
+
+    // Default (original) behavior for wide screens: single-line large text
+    if (!isNarrow) {
+      let fontSize = Math.floor(w * 0.15);
       ctx.font = `bold ${fontSize}px "Inter", "Microsoft YaHei", sans-serif`;
-      metrics = ctx.measureText(text);
+      let metrics = ctx.measureText(text);
+      while (metrics.width > w * 0.8 && fontSize > 20) {
+        fontSize -= 5;
+        ctx.font = `bold ${fontSize}px "Inter", "Microsoft YaHei", sans-serif`;
+        metrics = ctx.measureText(text);
+      }
+
+      ctx.fillStyle = '#000';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillText(text, w / 2, h / 2);
+
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const points: { x: number; y: number; color: string }[] = [];
+      const step = fontSize > 100 ? 6 : 4;
+      for (let y = 0; y < h; y += step) {
+        for (let x = 0; x < w; x += step) {
+          if (data[(y * w + x) * 4 + 3] > 128) {
+            points.push({ x, y, color: '#FF69B4' });
+          }
+        }
+      }
+      return points;
     }
 
+    // Narrow screens: try to render as two lines at most
+    let fontSize = Math.floor(w * 0.12);
+    const minFont = 14;
+    const maxTextWidth = Math.floor(w * 0.9);
+    const setFont = (s: number) => { ctx.font = `bold ${s}px "Inter", "Microsoft YaHei", sans-serif`; };
+    setFont(fontSize);
+
+    const measure = (s: string) => ctx.measureText(s).width;
+    // Decrease if overall too wide
+    while (fontSize > minFont && measure(text) > maxTextWidth * 2) {
+      fontSize -= 2;
+      setFont(fontSize);
+    }
+
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let current = '';
+    for (let i = 0; i < words.length; i++) {
+      const trial = current ? current + ' ' + words[i] : words[i];
+      if (measure(trial) <= maxTextWidth) {
+        current = trial;
+      } else {
+        if (current) lines.push(current);
+        current = words[i];
+        if (lines.length === 1) {
+          // if we already have one line, force remaining into second line
+          const remaining = words.slice(i + 1).join(' ');
+          current = current + (remaining ? ' ' + remaining : '');
+          break;
+        }
+      }
+    }
+    if (current) lines.push(current);
+    // Ensure max 2 lines
+    if (lines.length > 2) {
+      const merged = lines.slice(1).join(' ');
+      lines.splice(1, lines.length - 1, merged);
+    }
+
+    setFont(fontSize);
     ctx.fillStyle = '#000';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    
     ctx.clearRect(0, 0, w, h);
-    ctx.fillText(text, w / 2, h / 2);
+
+    const lineHeight = Math.max(fontSize * 1.1, 18);
+    const totalHeight = lines.length * lineHeight;
+    const startY = Math.floor(h / 2 - totalHeight / 2 + lineHeight / 2);
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], w / 2, startY + i * lineHeight);
+    }
 
     const data = ctx.getImageData(0, 0, w, h).data;
-    const points: {x: number, y: number, color: string}[] = [];
-    const step = fontSize > 100 ? 6 : 4;
-    
+    const points: { x: number; y: number; color: string }[] = [];
+    const step = fontSize > 60 ? 6 : fontSize > 30 ? 5 : 4;
     for (let y = 0; y < h; y += step) {
       for (let x = 0; x < w; x += step) {
         if (data[(y * w + x) * 4 + 3] > 128) {
@@ -901,6 +967,7 @@ const HomeView = ({ photos, setPhotos }: { photos: Photo[], setPhotos: React.Dis
   const [rotation, setRotation] = useState(0);
   const [isRotating, setIsRotating] = useState(true);
   const [likesEffect, setLikesEffect] = useState<{x: number, y: number, id: number}[]>([]);
+  const [isNarrow, setIsNarrow] = useState<boolean>(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   
   const rotationRef = useRef(0);
   const isDragging = useRef(false);
@@ -910,6 +977,8 @@ const HomeView = ({ photos, setPhotos }: { photos: Photo[], setPhotos: React.Dis
   const TILT_ANGLE = 15;
 
   useEffect(() => {
+    const handleResize = () => setIsNarrow(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
     let frame: number;
     const animate = () => {
       if (isRotating && !fullscreenIdx && !isDragging.current) {
@@ -919,7 +988,10 @@ const HomeView = ({ photos, setPhotos }: { photos: Photo[], setPhotos: React.Dis
       frame = requestAnimationFrame(animate);
     };
     frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', handleResize);
+    };
   }, [isRotating, fullscreenIdx]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -1022,50 +1094,71 @@ const HomeView = ({ photos, setPhotos }: { photos: Photo[], setPhotos: React.Dis
         </div>
       ))}
 
-      <div className="relative pt-64 pb-96 flex flex-col items-center justify-center perspective-[3000px] pointer-events-none">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1600px] h-[800px] bg-gradient-to-b from-pink-500/5 to-transparent blur-[160px] rounded-full rotate-x-75 animate-pulse pointer-events-none"></div>
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1100px] h-[550px] border-2 border-white/5 rounded-full rotate-x-75 pointer-events-none shadow-[0_0_150px_rgba(255,255,255,0.03)]"></div>
-        
-        <div 
-          className="relative preserve-3d w-[320px] h-[450px] pointer-events-auto"
-          style={{ transform: `rotateX(${TILT_ANGLE}deg) rotateY(${rotation}deg)` }}
-        >
-          {photos.map((photo, idx) => {
-            const angle = (idx / photos.length) * 360;
-            return (
-              <div 
-                key={photo.id}
-                className="absolute inset-0 cursor-pointer preserve-3d transition-transform duration-500"
-                style={{ 
-                  transform: `rotateY(${angle}deg) translateZ(${radius}px) rotateY(${-angle - rotation}deg) rotateX(${-TILT_ANGLE}deg)` 
-                }}
-                onClick={(e) => {
-                  if(!isDragging.current) {
-                    setFullscreenIdx(idx);
-                    handleLike(photo.id, e);
-                  }
-                }}
-              >
-                <div className="relative w-full h-full group rounded-[2.5rem] overflow-hidden border border-white/10 bg-white/5 backdrop-blur-sm shadow-[0_30px_100px_rgba(0,0,0,0.8)] hover:border-pink-500/40 transition-all duration-700 hover:-translate-y-16 hover:scale-105 active:scale-95">
-                  <img src={photo.url} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-all duration-500 group-hover:scale-110" alt="Memory" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 p-8 flex flex-col justify-end">
-                    <div className="flex items-center gap-3 text-pink-400">
-                      <Heart size={24} fill={photo.likes > 0 ? "currentColor" : "none"} />
-                      <span className="text-xl font-black tracking-tighter">{photo.likes}</span>
+      {!isNarrow ? (
+        <div className="relative pt-64 pb-96 flex flex-col items-center justify-center perspective-[3000px] pointer-events-none">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1600px] h-[800px] bg-gradient-to-b from-pink-500/5 to-transparent blur-[160px] rounded-full rotate-x-75 animate-pulse pointer-events-none"></div>
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1100px] h-[550px] border-2 border-white/5 rounded-full rotate-x-75 pointer-events-none shadow-[0_0_150px_rgba(255,255,255,0.03)]"></div>
+          
+          <div 
+            className="relative preserve-3d w-[320px] h-[450px] pointer-events-auto"
+            style={{ transform: `rotateX(${TILT_ANGLE}deg) rotateY(${rotation}deg)` }}
+          >
+            {photos.map((photo, idx) => {
+              const angle = (idx / photos.length) * 360;
+              return (
+                <div 
+                  key={photo.id}
+                  className="absolute inset-0 cursor-pointer preserve-3d transition-transform duration-500"
+                  style={{ 
+                    transform: `rotateY(${angle}deg) translateZ(${radius}px) rotateY(${-angle - rotation}deg) rotateX(${-TILT_ANGLE}deg)` 
+                  }}
+                  onClick={(e) => {
+                    if(!isDragging.current) {
+                      setFullscreenIdx(idx);
+                      handleLike(photo.id, e as any);
+                    }
+                  }}
+                >
+                  <div className="relative w-full h-full group rounded-[2.5rem] overflow-hidden border border-white/10 bg-white/5 backdrop-blur-sm shadow-[0_30px_100px_rgba(0,0,0,0.8)] hover:border-pink-500/40 transition-all duration-700 hover:-translate-y-16 hover:scale-105 active:scale-95">
+                    <img src={photo.url} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-all duration-500 group-hover:scale-110" alt="Memory" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 p-8 flex flex-col justify-end">
+                      <div className="flex items-center gap-3 text-pink-400">
+                        <Heart size={24} fill={photo.likes > 0 ? "currentColor" : "none"} />
+                        <span className="text-xl font-black tracking-tighter">{photo.likes}</span>
+                      </div>
                     </div>
+                    <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent pointer-events-none opacity-30"></div>
                   </div>
-                  <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent pointer-events-none opacity-30"></div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
 
-        <div className="mt-32 opacity-20 flex flex-col items-center gap-4 animate-bounce">
-          <p className="text-[10px] font-black tracking-[0.5em] uppercase">Scroll Down to explore more</p>
-          <div className="w-px h-12 bg-white/40"></div>
+          <div className="mt-32 opacity-20 flex flex-col items-center gap-4 animate-bounce">
+            <p className="text-[10px] font-black tracking-[0.5em] uppercase">Scroll Down to explore more</p>
+            <div className="w-px h-12 bg-white/40"></div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="px-4 pt-28 pb-12">
+          <div className="max-w-6xl mx-auto">
+            <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4">
+              {photos.map((photo, idx) => (
+                <div key={photo.id} className="cursor-pointer rounded-2xl overflow-hidden bg-white/5 border border-white/8" onClick={(e) => { if(!isDragging.current) { setFullscreenIdx(idx); handleLike(photo.id, e as any); } }}>
+                  <img src={photo.url} className="w-full h-40 sm:h-48 object-cover" alt="Memory" />
+                  <div className="p-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-pink-400">
+                      <Heart size={18} fill={photo.likes > 0 ? 'currentColor' : 'none'} />
+                      <span className="text-sm font-black">{photo.likes}</span>
+                    </div>
+                    {!photo.isInitial && <span className="text-xs text-white/40">Uploaded</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {fullscreenIdx !== null && (
         <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 sm:p-8 overflow-hidden">
